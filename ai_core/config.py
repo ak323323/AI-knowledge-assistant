@@ -1,7 +1,0 @@
-import os
-
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
-TOP_K = 5
-MODEL_NAME = "llama3"
-EMBED_MODEL = "all-MiniLM-L6-v2"
