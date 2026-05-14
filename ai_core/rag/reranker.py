@@ -1,6 +1,7 @@
 import numpy as np
 from sentence_transformers import CrossEncoder
 import torch
+from scipy.special import expit
 
 
 # =========================================================
@@ -117,13 +118,18 @@ class Reranker:
         for r in results:
 
             enriched_content = f"""
-        Section: {r.get('section', '')}
+                Document Name:
+                {r.get('file_name', '')}
 
-        Document: {r.get('file_name', '')}
+                Section:
+                {r.get('section', '')}
 
-        Content:
-        {r['content']}
-        """
+                Category:
+                {r.get('category', '')}
+
+                Content:
+                {r['content']}
+                """
 
             pairs.append(
                 (query, enriched_content)
@@ -154,7 +160,11 @@ class Reranker:
         #
         # =====================================================
 
+        # Raw logits
         scores = np.array(scores, dtype=np.float32)
+
+        # Normalize to 0-1 probability
+        normalized_scores = expit(scores)
 
         print("\n[RERANK SCORES]")
 
@@ -174,9 +184,40 @@ class Reranker:
         for i, r in enumerate(results):
 
             r["rerank_score"] = float(scores[i])
+
+            # 0-1 normalized confidence
+            r["rerank_confidence"] = float(normalized_scores[i])    
         
         print("\n[RERANK DEBUG SAMPLE]")
         print(results[0])
+
+        filtered = [
+            r for r in results
+            if r["rerank_confidence"] >= 0.55
+        ]
+
+        if not filtered:
+            print("[RERANK] No confident matches")
+            return []
+        
+
+        #======================================================
+        # Duplicate chunk removal
+        #======================================================
+        seen = set()
+        unique_results = []
+
+        for r in results:
+
+            key = r["content"][:200]
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            unique_results.append(r)
+
+        results = unique_results
 
         # =====================================================
         # SORT RESULTS
@@ -184,18 +225,25 @@ class Reranker:
 
         ranked = sorted(
             results,
-            key=lambda x: x["rerank_score"],
+            key=lambda x: x["rerank_confidence"],
             reverse=True
         )
 
-        print("\n[RERANK DISTRIBUTION]")
+        print("\n[RERANK RESULTS]")
 
         for i, r in enumerate(ranked[:10]):
 
+            preview = r["content"][:100].replace("\n", " ")
+
             print(
-                f"{i+1}. "
-                f"{r['rerank_score']:.4f} | "
-                f"{r.get('section', 'Unknown')}"
+                f"""
+                Rank        : {i+1}
+                Confidence  : {r['rerank_confidence']:.4f}
+                Raw Score   : {r['rerank_score']:.4f}
+                File        : {r.get('file_name')}
+                Section     : {r.get('section')}
+                Preview     : {preview}
+                """
             )
 
         return ranked

@@ -23,7 +23,8 @@ env/
 # VECTOR DATABASE / RAG STORAGE
 # =====================================================
 
-storage/
+faiss.index
+metadata.pkl
 vector_db/
 
 # FAISS / Pickle files

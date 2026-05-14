@@ -11,24 +11,31 @@ from typing import TypedDict, List
 
 class ChunkData(TypedDict):
     """
-    Represents a semantic chunk used in RAG retrieval.
-
-    Why TypedDict?
-    ---------------
-    - Gives strong typing
-    - Fixes Pylance errors
-    - Improves autocomplete
-    - Prevents key mistakes
+    Structured chunk schema for advanced RAG retrieval.
     """
 
-    # Actual chunk text used for embeddings
+    # Main content
     text: str
 
-    # Section heading
-    section: str
+    # Document metadata
+    file_name: str
+    document_title: str
+    doc_id: str
 
-    # Chunk size metadata
+    # Structure metadata
+    section: str
+    subsection: str
+
+    # Chunk tracking
+    chunk_id: int
+
+    # Chunk stats
     chunk_length: int
+    word_count: int
+
+    # Semantic metadata
+    keywords: List[str]
+    tags: List[str]
 
 
 # =========================================================
@@ -217,23 +224,26 @@ def clean_text(text: str) -> str:
 def split_by_headings(text: str):
     """
     Split document into semantic sections.
-
-    Detects headings like:
-
-    1. Objective
-    2. Technology Stack
-    3. Implementation Details
+    Supports:
+    - 1. Heading
+    - 1.1 Subheading
+    - ALL CAPS headings
+    - Markdown headings
     """
 
-    # -------------------------------------------------
-    # Split BEFORE numbered headings
-    # -------------------------------------------------
-
-    pattern = r"(?=\n\s*\d+\.\s+[A-Z])"
+    pattern = (
+        r"(?="
+        r"\n\s*(?:"
+        r"\d+\.\s+[A-Z]|"          # 1. Heading
+        r"\d+\.\d+\s+[A-Z]|"       # 1.1 Subheading
+        r"#+\s+.*|"                # Markdown
+        r"[A-Z][A-Z\s]{5,}"        # ALL CAPS
+        r")"
+        r")"
+    )
 
     sections = re.split(pattern, text)
 
-    # Cleanup
     sections = [
         s.strip()
         for s in sections
@@ -248,7 +258,7 @@ def split_by_headings(text: str):
 # ADVANCED RAG CHUNKER
 # =========================================================
 
-def chunk_text(text: str) -> List[ChunkData]:
+def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
     """
     Production-grade chunking pipeline.
 
@@ -267,6 +277,13 @@ def chunk_text(text: str) -> List[ChunkData]:
     # -----------------------------------------------------
 
     text = clean_text(text)
+    document_title = (
+    file_name
+    .replace(".pdf", "")
+    .replace(".docx", "")
+    .replace("_", " ")
+    .strip()
+    )
 
     # -----------------------------------------------------
     # STEP 2: SPLIT INTO SECTIONS
@@ -281,42 +298,36 @@ def chunk_text(text: str) -> List[ChunkData]:
     splitter = RecursiveCharacterTextSplitter(
 
         # Larger chunks preserve technical meaning
-        chunk_size=450,
+        chunk_size=700,
 
         # Overlap preserves cross-boundary context
-        chunk_overlap=80,
+        chunk_overlap=120,
 
         # Semantic-aware separators
         separators=[
+            "\n# ",
+            "\n## ",
+            "\n### ",
 
-            # Large paragraph gaps
-            "\n\n\n",
-
-            # Paragraphs
             "\n\n",
 
-            # Lines
             "\n",
 
-            # Sentences
             ". ",
             "? ",
             "! ",
 
-            # Bullet lists
+            "; ",
+
             "- ",
             "* ",
 
-            # Code blocks
             "```",
 
-            # Indentation
             "    ",
 
-            # Words
             " ",
 
-            # Last fallback
             ""
         ]
     )
@@ -361,12 +372,10 @@ def chunk_text(text: str) -> List[ChunkData]:
             # chunk is plain STRING
             cleaned = chunk.strip()
 
-            # Skip tiny chunks
-            if len(cleaned) < 80:
-                continue
+            chunk_title = cleaned.split(".")[0][:80]
 
             # Skip low-information chunks
-            if len(cleaned.split()) < 10:
+            if len(cleaned.split()) < 20:
                 continue
 
             # Remove duplicated title
@@ -377,20 +386,42 @@ def chunk_text(text: str) -> List[ChunkData]:
             ).strip()
 
             enhanced_chunk = f"""
-            Section: {section_title}
+                Document: {document_title}
 
-            {cleaned}
-            """
+                Section: {section_title}
+
+                Chunk Title:
+                {chunk_title}
+
+                Content:
+                {cleaned}
+                """
 
             # Store structured chunk
             chunk_data: ChunkData = {
+                # Main chunk text
+                "text": enhanced_chunk,
 
-                                        "text": enhanced_chunk,
+                # Document metadata
+                "file_name": file_name,
+                "document_title": document_title,
+                "doc_id": doc_id,
 
-                                        "section": section_title,
+                # Structural metadata
+                "section": section_title,
+                "subsection": "General",
 
-                                        "chunk_length": len(enhanced_chunk)
-                                    }
+                # Chunk tracking
+                "chunk_id": len(all_chunks),
+
+                # Chunk statistics
+                "chunk_length": len(enhanced_chunk),
+                "word_count": len(enhanced_chunk.split()),
+
+                # Semantic metadata
+                "keywords": extract_keywords(cleaned),
+                "tags": []
+            }
 
             all_chunks.append(chunk_data)
 
@@ -419,4 +450,55 @@ def chunk_text(text: str) -> List[ChunkData]:
         print("\nPreview:\n")
         print(chunk[:500])
 
+    all_chunks = deduplicate_chunks(all_chunks)
+
     return all_chunks
+
+def deduplicate_chunks(chunks):
+
+    seen = set()
+    unique_chunks = []
+
+    for chunk in chunks:
+
+        normalized = (
+            chunk["text"]
+            .strip()
+            .lower()
+        )
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique_chunks.append(chunk)
+
+    return unique_chunks
+
+def extract_keywords(text: str, top_k=10):
+    """
+    Simple keyword extraction using word frequency.
+    """
+
+    words = re.findall(r"\b[a-zA-Z]{4,}\b", text.lower())
+
+    stopwords = {
+        "the", "and", "is", "in", "to", "of",
+        "a", "for", "on", "with", "that",
+        "this", "as", "by", "an", "be",
+        "are", "or", "from"
+    }
+
+    words = re.findall(r"\b[a-zA-Z]{3,}\b", text.lower())
+
+    filtered = [
+        w for w in words
+        if w not in stopwords
+    ]
+
+    counts = Counter(filtered)
+
+    return [
+        word
+        for word, _ in counts.most_common(top_k)
+    ]

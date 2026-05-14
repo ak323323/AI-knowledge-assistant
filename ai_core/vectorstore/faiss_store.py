@@ -2,27 +2,64 @@ import faiss
 import numpy as np
 import os
 import pickle
-import tempfile
+import uuid
 from datetime import datetime
+from storage.document_registry import DocumentRegistry
 
 
 class FAISSStore:
-    def __init__(self, dim, embed_model, storage_path="storage"):
+
+    def __init__(
+        self,
+        dim,
+        embed_model,
+        storage_path="storage"
+    ):
+
         self.dim = dim
         self.embed_model = embed_model
         self.storage_path = storage_path
-        self.metadata = []
-        self.sources = []
-        self.doc_ids = []
+
+        # -----------------------------------
+        # Chunk storage
+        # -----------------------------------
+        self.texts = []
+
+        # -----------------------------------
+        # Document registry
+        # Tracks uploaded files
+        # -----------------------------------
+        self.documents = {}
 
         os.makedirs(storage_path, exist_ok=True)
 
-        self.index_file = os.path.join(storage_path, "faiss.index")
-        self.meta_file = os.path.join(storage_path, "metadata.pkl") 
+        # -----------------------------------
+        # Storage files
+        # -----------------------------------
+        self.index_file = os.path.join(
+            storage_path,
+            "faiss.index"
+        )
 
-        # Load or create
-        if os.path.exists(self.index_file) and os.path.exists(self.meta_file):
+        self.meta_file = os.path.join(
+            storage_path,
+            "metadata.pkl"
+        )
+
+        self.docs_file = os.path.join(
+            storage_path,
+            "documents.pkl"
+        )
+
+        # -----------------------------------
+        # Load existing index
+        # -----------------------------------
+        if (
+            os.path.exists(self.index_file)
+            and os.path.exists(self.meta_file)
+        ):
             self.load()
+
         else:
             self._create_new()
 
@@ -33,88 +70,197 @@ class FAISSStore:
     # CREATE NEW INDEX
     # -------------------------
     def _create_new(self):
+
         print("[INIT] Creating new FAISS index")
-        self.index = faiss.IndexFlatIP(self.dim)
+
+        # =====================================================
+        # BASE INDEX
+        # =====================================================
+
+        base_index = faiss.IndexFlatIP(self.dim)
+
+        # =====================================================
+        # WRAP WITH ID MAP
+        # =====================================================
+
+        self.index = faiss.IndexIDMap(base_index)
+
+        # =====================================================
+        # METADATA STORAGE
+        # =====================================================
+
         self.texts = []
 
     # -------------------------
     # ADD DATA
     # -------------------------
-    def add(self, vectors, texts, metadata=None, source="unknown", doc_id=None):
-        
-        # Ensure 2D
+    def add(self,vectors,texts,metadata=None,source="unknown",doc_id=None):
+
+        print("\n[ADD] Adding document chunks")
+
+        # -----------------------------------
+        # Generate doc_id if missing
+        # -----------------------------------
+        if doc_id is None:
+            doc_id = str(uuid.uuid4())
+
+        # -----------------------------------
+        # Convert vectors
+        # -----------------------------------
         vectors = np.array(vectors).astype("float32")
 
+        # -----------------------------------
         # Validate vectors
-        if np.isnan(vectors).any() or np.isinf(vectors).any():
-            raise ValueError("Invalid embeddings detected (NaN or Inf)")
+        # -----------------------------------
+        if np.isnan(vectors).any():
+            raise ValueError("NaN embeddings detected")
 
+        if np.isinf(vectors).any():
+            raise ValueError("Inf embeddings detected")
+
+        # Ensure 2D
         if len(vectors.shape) == 1:
             vectors = vectors.reshape(1, -1)
 
+        # Dimension check
         if vectors.shape[1] != self.dim:
-            raise ValueError(f"Embedding dim mismatch: expected {self.dim}, got {vectors.shape[1]}")
+            raise ValueError(
+                f"Expected dim {self.dim}, got {vectors.shape[1]}"
+            )
 
+        # -----------------------------------
         # Normalize for cosine similarity
+        # -----------------------------------
         faiss.normalize_L2(vectors)
 
+        # -----------------------------------
+        # Register document
+        # -----------------------------------
+        self.documents[doc_id] = {
+            "doc_id": doc_id,
+            "file_name": os.path.basename(source),
+            "source": source,
+            "uploaded_at": datetime.now().isoformat(),
+            "total_chunks": len(texts)
+        }
+
+        # -----------------------------------
+        # Base chunk index
+        # -----------------------------------
         base_index = self.index.ntotal
 
+        # -----------------------------------
+        # Store chunk metadata
+        # -----------------------------------
         for i, text in enumerate(texts):
-            # Extracting metadata for this chunk
+
             meta = metadata[i] if metadata else {}
-            
-            # Store chunk + metadata
-            self.texts.append({
-                 # Main retrievable content
+
+            chunk_data = {
+
+                # =====================================================
+                # CORE CONTENT
+                # =====================================================
+
                 "content": text,
 
-                # File metadata
+                # =====================================================
+                # VECTOR STORAGE (CRITICAL UPGRADE)
+                # =====================================================
+
+                # Store embedding vector directly
+                "embedding": vectors[i].tolist(),
+
+                # =====================================================
+                # DOCUMENT METADATA
+                # =====================================================
+
                 "source": source,
 
-                "file_name": os.path.basename(source),
+                "file_name": meta.get(
+                    "file_name",
+                    os.path.basename(source)
+                ),
 
-                # Chunk tracking
-                "chunk_id": base_index + i,
+                "document_title": meta.get(
+                    "document_title",
+                    os.path.basename(source)
+                ),
 
                 "doc_id": doc_id,
 
-                # Semantic metadata
-                "section": meta.get("section", "Unknown"),
+                # =====================================================
+                # CHUNK METADATA
+                # =====================================================
+
+                "chunk_id": base_index + i,
+
+                "section": meta.get(
+                    "section",
+                    "General"
+                ),
+
+                "subsection": meta.get(
+                    "subsection",
+                    "General"
+                ),
 
                 "chunk_length": meta.get(
                     "chunk_length",
                     len(text)
                 ),
 
-                # Timestamp
-                "uploaded_at": datetime.now().isoformat(),
+                "word_count": meta.get(
+                    "word_count",
+                    len(text.split())
+                ),
 
-                # Grouping/filtering
-                "category": "general",
+                # =====================================================
+                # SEARCH METADATA
+                # =====================================================
 
-                # Optional future tagging
-                "tags": []
-            })
-        # Debug metadata
-        print("\n[METADATA DEBUG]")
-        print(self.texts[-1])
+                "keywords": meta.get(
+                    "keywords",
+                    []
+                ),
 
-        self.index.add(vectors) #type: ignore
+                "tags": meta.get(
+                    "tags",
+                    []
+                ),
 
-        print(f"[ADD] Index size: {self.index.ntotal}")
+                "category": meta.get(
+                    "category",
+                    "general"
+                ),
+
+                # =====================================================
+                # TIMESTAMP
+                # =====================================================
+
+                "uploaded_at": datetime.now().isoformat()
+            }
+
+            self.texts.append(chunk_data)
+
+        # -----------------------------------
+        # Add vectors to FAISS
+        # -----------------------------------
+        vector_ids = np.arange(base_index, base_index + len(vectors)).astype("int64")
+
+        self.index.add_with_ids(vectors, vector_ids) #type: ignore
+
+        print(f"[ADD] Added {len(texts)} chunks")
+        print(f"[ADD] Index size = {self.index.ntotal}")
 
         self.save()
+
+        return doc_id
 
     # ---------------------------------------------------
     # SEARCH
     # ---------------------------------------------------
-    def search(
-        self,
-        query_vector,
-        k=5,
-        filters=None
-    ):
+    def search(self,query_vector,k=5,filters=None):
         """
         Search FAISS index with optional metadata filtering.
 
@@ -200,6 +346,21 @@ class FAISSStore:
                 if not matched:
                     continue
 
+            # Optional document filter
+            if filters:
+
+                matched = True
+
+                for key, value in filters.items():
+
+                    if str(chunk.get(key)).lower().strip() != str(value).lower().strip():
+
+                        matched = False
+                        break
+
+                if not matched:
+                    continue
+
             results.append(chunk)
 
         # ---------------------------------------------------
@@ -225,13 +386,13 @@ class FAISSStore:
 
             print(
                 f"""
-    Score      : {r['score']:.4f}
-    File       : {r.get('file_name')}
-    Section    : {r.get('section')}
-    Category   : {r.get('category')}
-    Chunk ID   : {r.get('chunk_id')}
-    Preview    : {r['content'][:120]}
-    """
+                Score      : {r['score']:.4f}
+                File       : {r.get('file_name')}
+                Section    : {r.get('section')}
+                Category   : {r.get('category')}
+                Chunk ID   : {r.get('chunk_id')}
+                Preview    : {r['content'][:120]}
+                """
             )
 
         return results
@@ -239,72 +400,99 @@ class FAISSStore:
     # SAFE SAVE (CRITICAL FIX)
     # -------------------------
     def save(self):
+
         try:
+
             temp_index = self.index_file + ".tmp"
             temp_meta = self.meta_file + ".tmp"
+            temp_docs = self.docs_file + ".tmp"
 
-            # Write to temp files first
+            # Save FAISS index
             faiss.write_index(self.index, temp_index)
 
+            # Save chunk metadata
             with open(temp_meta, "wb") as f:
                 pickle.dump(self.texts, f)
 
-            # Atomic replace (safe)
+            # Save document registry
+            with open(temp_docs, "wb") as f:
+                pickle.dump(self.documents, f)
+
+            # Atomic replace
             os.replace(temp_index, self.index_file)
             os.replace(temp_meta, self.meta_file)
+            os.replace(temp_docs, self.docs_file)
 
-            print("[SAVE] FAISS index and metadata saved safely")
+            print("[SAVE] Storage saved successfully")
 
         except Exception as e:
-            print("[ERROR] Save failed:", str(e))
+            print("[SAVE ERROR]", e)
 
     # -------------------------
     # SAFE LOAD (CRITICAL FIX)
     # -------------------------
     def load(self):
-        try:
-            # Validate files
-            if (
-                not os.path.exists(self.index_file)
-                or os.path.getsize(self.index_file) == 0
-                or not os.path.exists(self.meta_file)
-                or os.path.getsize(self.meta_file) == 0
-            ):
-                print("[LOAD] Invalid storage files → resetting")
-                self._create_new()
-                return
 
-            self.index = faiss.read_index(self.index_file)
+        try:
+
+            print("[LOAD] Loading FAISS storage")
+
+            self.index = faiss.read_index(
+                self.index_file
+            )
 
             with open(self.meta_file, "rb") as f:
                 self.texts = pickle.load(f)
 
+            # Load document registry
+            if os.path.exists(self.docs_file):
+
+                with open(self.docs_file, "rb") as f:
+                    self.documents = pickle.load(f)
+
+            else:
+                self.documents = {}
+
             # Consistency check
             if self.index.ntotal != len(self.texts):
-                print("[WARNING] Index/Text mismatch → resetting")
+
+                print("[WARNING] Index mismatch")
+
                 self._create_new()
+
                 return
 
-            print("[LOAD] FAISS index and metadata loaded")
+            print("[LOAD] Storage loaded successfully")
+            print(f"[LOAD] Chunks: {len(self.texts)}")
+            print(f"[LOAD] Documents: {len(self.documents)}")
 
         except Exception as e:
-            print("[ERROR] Load failed:", e)
-            print("[RECOVERY] Resetting storage")
+
+            print("[LOAD ERROR]", e)
+
             self._create_new()
 
     # -------------------------
     # RESET
     # -------------------------
     def reset(self):
+
         print("[RESET] Clearing storage")
 
         self._create_new()
 
-        if os.path.exists(self.index_file):
-            os.remove(self.index_file)
+        for file in [
+            self.index_file,
+            self.meta_file,
+            self.docs_file
+        ]:
 
-        if os.path.exists(self.meta_file):
-            os.remove(self.meta_file)
+            if os.path.exists(file):
+                os.remove(file)
+
+        registry = DocumentRegistry()
+
+        registry.clear()
 
     # -------------------------
     # DELETE DOCUMENT
@@ -312,52 +500,99 @@ class FAISSStore:
     def delete_document(self, doc_id):
         """
         Delete all chunks belonging to a document
-        and rebuild the FAISS index.
+        and rebuild FAISS WITHOUT re-embedding.
         """
 
-        print(f"[DELETE] Removing doc_id: {doc_id}")
+        print(f"\n[DELETE] Removing document: {doc_id}")
 
-        # Safety check
-        if self.embed_model is None:
-            raise ValueError("Embedding model is not initialized")
+        # =====================================================
+        # STEP 1: KEEP ALL OTHER DOCUMENTS
+        # =====================================================
 
-        # Keep all OTHER documents
-        remaining = [
-            t for t in self.texts
-            if str(t.get("doc_id")).strip() != str(doc_id).strip()
+        remaining_chunks = [
+
+            chunk
+            for chunk in self.texts
+            if str(chunk.get("doc_id")).strip()
+            != str(doc_id).strip()
         ]
 
-        print(f"[DELETE] Remaining chunks: {len(remaining)}")
+        removed_count = len(self.texts) - len(remaining_chunks)
 
-        # If no docs remain → reset everything
-        if not remaining:
+        print(f"[DELETE] Removed chunks: {removed_count}")
+
+        print(f"[DELETE] Remaining chunks: {len(remaining_chunks)}")
+
+        # =====================================================
+        # STEP 2: RESET IF EMPTY
+        # =====================================================
+
+        if not remaining_chunks:
+
+            print("[DELETE] No documents remain")
+
             self.reset()
+
             return True
 
-        # Extract text content
-        contents = [t["content"] for t in remaining]
+        # =====================================================
+        # STEP 3: REBUILD FAISS USING STORED VECTORS
+        # =====================================================
 
-        # Re-embed remaining chunks
-        vectors = self.embed_model.encode(contents)
+        print("[DELETE] Rebuilding FAISS index...")
 
-        vectors = np.array(vectors).astype("float32")
+        vectors = np.array(
 
-        # Normalize for cosine similarity
+            [
+                chunk["embedding"]
+                for chunk in remaining_chunks
+            ],
+
+            dtype=np.float32
+        )
+
+        # Safety normalization
         faiss.normalize_L2(vectors)
 
-        # Create fresh index
-        self.index = faiss.IndexFlatIP(self.dim)
+        # =====================================================
+        # CREATE NEW BASE INDEX
+        # =====================================================
 
-        # Add vectors
-        self.index.add(vectors) #type: ignore
+        base_index = faiss.IndexFlatIP(self.dim)
 
-        # Save remaining metadata
-        self.texts = remaining
+        # =====================================================
+        # WRAP WITH INDEX ID MAP
+        # =====================================================
 
-        # Persist
+        self.index = faiss.IndexIDMap(base_index)
+
+        # =====================================================
+        # REBUILD VECTOR IDS
+        # =====================================================
+
+        vector_ids = np.arange(len(vectors)).astype("int64")
+
+        # =====================================================
+        # ADD VECTORS WITH IDS
+        # =====================================================
+
+        self.index.add_with_ids(vectors, vector_ids) #type: ignore
+
+        # =====================================================
+        # STEP 4: SAVE METADATA
+        # =====================================================
+
+        self.texts = remaining_chunks
+
+        # =====================================================
+        # STEP 5: PERSIST STORAGE
+        # =====================================================
+
         self.save()
 
-        print("[DELETE] Index rebuilt successfully")
+        print("[DELETE] Document removed successfully")
+
+        print(f"[DELETE] New index size: {self.index.ntotal}")
 
         return True
 
@@ -366,3 +601,12 @@ class FAISSStore:
     # -------------------------
     def document_exists(self, doc_id):
         return any(t.get("doc_id") == doc_id for t in self.texts)
+    
+
+    def list_documents(self):
+
+        """
+        Return uploaded document registry.
+        """
+
+        return list(self.documents.values())

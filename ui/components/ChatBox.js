@@ -219,7 +219,19 @@ console.log("DOCUMENTS:", documents);
                   : "mr-auto bg-[#1b2130]"
               }`}
             >
-            {msg.role === "assistant" && (
+              <ReactMarkdown
+                components={{
+                  p: ({ children }) => <p className="mb-2">{children}</p>,
+                  h1: ({ children }) => <h1 className="text-xl font-bold">{children}</h1>,
+                  code: ({ children }) => (
+                    <code className="bg-gray-800 px-1 rounded">{children}</code>
+                  ),
+                }}
+              >
+                {msg.content}
+              </ReactMarkdown>
+
+              {msg.role === "assistant" && (
             <div className="flex gap-2 mt-3">
               <button
                 onClick={() => download("pdf", msg)}
@@ -236,17 +248,6 @@ console.log("DOCUMENTS:", documents);
               </button>
             </div>
             )}
-              <ReactMarkdown
-                components={{
-                  p: ({ children }) => <p className="mb-2">{children}</p>,
-                  h1: ({ children }) => <h1 className="text-xl font-bold">{children}</h1>,
-                  code: ({ children }) => (
-                    <code className="bg-gray-800 px-1 rounded">{children}</code>
-                  ),
-                }}
-              >
-                {msg.content}
-              </ReactMarkdown>
 
               {/* Context for RAG */}
               {msg.sources && msg.sources.length > 0 && (
@@ -328,20 +329,7 @@ console.log("DOCUMENTS:", documents);
               className="px-3 py-1 bg-green-600 rounded-lg"
             >
               {uploading ? "Uploading..." : "Upload"}
-            </button>
-            <button
-                    onClick={() => download("pdf", msg)}
-                    className="px-2 py-1 bg-blue-600 rounded-lg text-xs"
-                  >
-                    ⬇ PDF
-                  </button>
-
-                  <button
-                    onClick={() => download("docx", msg)}
-                    className="px-2 py-1 bg-green-600 rounded-lg text-xs"
-                  >
-                    ⬇ Word
-                  </button>   
+            </button>  
           </div>
         </div>
         {uploadInfo && (

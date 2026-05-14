@@ -91,7 +91,7 @@ class Query(BaseModel):
     filters: Optional[Dict[str, str]] = None
 
     # Retrieval config
-    top_k: int = 5
+    top_k: int = 8
 
 
 # Health Check Endpoint
@@ -258,29 +258,95 @@ async def upload(file: UploadFile = File(...)):
 @app.delete("/documents/{doc_id}")
 def delete_document(doc_id: str):
 
-    print(f"[API DELETE] Requested doc_id: {doc_id}")
+    try:
 
-    success = vectorstore.delete_document(doc_id)
+        print(f"\n[API DELETE] Requested doc_id: {doc_id}")
 
-    if not success:
+        # =====================================================
+        # FIND DOCUMENT
+        # =====================================================
+
+        document = None
+
+        for chunk in vectorstore.texts:
+
+            if chunk.get("doc_id") == doc_id:
+
+                document = chunk
+
+                break
+
+        if not document:
+
+            return {
+                "success": False,
+                "message": "Document not found"
+            }
+
+        # =====================================================
+        # GET FILE PATH
+        # =====================================================
+
+        source_path = document.get("source", "")
+
+        print(f"[DELETE] Source Path: {source_path}")
+
+        # =====================================================
+        # DELETE FROM VECTORSTORE
+        # =====================================================
+
+        success = vectorstore.delete_document(doc_id)
+
+        if not success:
+
+            return {
+                "success": False,
+                "message": "Vector deletion failed"
+            }
+
+        # =====================================================
+        # DELETE PHYSICAL FILE
+        # =====================================================
+
+        if source_path:
+
+            try:
+
+                if os.path.exists(source_path):
+
+                    os.remove(source_path)
+
+                    print(f"[DELETE] File removed")
+
+                else:
+
+                    print("[DELETE] File already missing")
+
+            except Exception as file_error:
+
+                print(
+                    "[DELETE FILE ERROR]",
+                    str(file_error)
+                )
+
+        # =====================================================
+        # SUCCESS
+        # =====================================================
+
+        return {
+            "success": True,
+            "message": "Document deleted successfully"
+        }
+
+    except Exception as e:
+
+        print("\n[DELETE API ERROR]")
+        print(str(e))
+
         return {
             "success": False,
-            "message": "Document not found"
+            "message": str(e)
         }
-    
-    print("\n[DOCUMENT DEBUG]")
-    print(f"Total Chunks: {len(vectorstore.texts)}")
-
-    if vectorstore.texts:
-        print("Sample Metadata:")
-        print(vectorstore.texts[0])
-    else:
-        print("Vectorstore is empty")
-
-    return {
-        "success": True,
-        "message": "Document deleted successfully"
-    }
 
 # Export Endpoint
 @app.post("/export")
