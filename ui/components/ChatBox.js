@@ -73,30 +73,101 @@ const ask = async () => {
 };
 
   const download = async (format, msg) => {
-    try {
-      const res = await fetch("http://127.0.0.1:8000/export", {
+
+  try {
+
+    // =====================================================
+    // SEND EXPORT REQUEST
+    // =====================================================
+
+    const res = await fetch(
+      "http://127.0.0.1:8000/export",
+      {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json"
         },
+
         body: JSON.stringify({
+
           answer: msg.content,
+
           sources: msg.sources || [],
+
           format: format
         })
-      });
+      }
+    );
 
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
+    // =====================================================
+    // CONVERT RESPONSE TO BLOB
+    // =====================================================
 
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = format === "pdf" ? "answer.pdf" : "answer.docx";
-      a.click();
+    const blob = await res.blob();
 
-    } catch (err) {
-      console.error("Download failed:", err);
+    const url = window.URL.createObjectURL(blob);
+
+    // =====================================================
+    // DETERMINE FILE EXTENSION
+    // =====================================================
+
+    let filename = "answer";
+
+    if (format === "pdf") {
+
+      filename += ".pdf";
+
+    } else if (format === "docx") {
+
+      filename += ".docx";
+
+    } else if (format === "md") {
+
+      filename += ".md";
+
+    } else if (format === "xlsx") {
+
+      filename += ".xlsx";
+
+    } else if (format === "csv") {
+
+      filename += ".csv";
+
+    } else {
+
+      filename += ".txt";
     }
+
+    // =====================================================
+    // CREATE DOWNLOAD LINK
+    // =====================================================
+
+    const a = document.createElement("a");
+
+    a.href = url;
+
+    a.download = filename;
+
+    document.body.appendChild(a);
+
+    a.click();
+
+    // =====================================================
+    // CLEANUP
+    // =====================================================
+
+    a.remove();
+
+    window.URL.revokeObjectURL(url);
+
+  } catch (err) {
+
+    console.error(
+      "[DOWNLOAD ERROR]",
+      err
+    );
+  }
 };
 
   const loadDocuments = async () => {
@@ -172,10 +243,6 @@ console.log("DOCUMENTS:", documents);
       {/* Sidebar */}
       <div className="w-64 bg-[#161a23] border-r border-gray-800 p-4 hidden md:block">
 
-        <button className="w-full mb-4 p-2 rounded-lg bg-purple-600 hover:bg-purple-700">
-          + New Chat
-        </button>
-
         <h3 className="text-sm text-gray-400 mb-2">📂 Indexed Files</h3>
 
         <div className="space-y-2 text-sm">
@@ -245,6 +312,24 @@ console.log("DOCUMENTS:", documents);
                 className="px-2 py-1 bg-green-600 rounded-lg text-xs"
               >
                 ⬇ Word
+              </button>
+              <button
+                onClick={() => download("md", msg)}
+                className="px-2 py-1 bg-gray-700 rounded-lg text-xs"
+              >
+                ⬇ MD
+              </button>
+              <button
+                onClick={() => download("xlsx", msg)}
+                className="px-2 py-1 bg-emerald-600 rounded-lg text-xs"
+              >
+                ⬇ Excel
+              </button>
+              <button
+                onClick={() => download("csv", msg)}
+                className="px-2 py-1 bg-yellow-600 rounded-lg text-xs"
+              >
+                ⬇ CSV
               </button>
             </div>
             )}

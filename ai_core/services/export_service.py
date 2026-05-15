@@ -6,8 +6,9 @@ from reportlab.platypus.tables import Table, TableStyle
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from io import BytesIO
+from io import BytesIO, StringIO
 import re
+import pandas as pd
 
 
 # =========================================================
@@ -32,6 +33,231 @@ def clean_markdown(text: str) -> str:
 
     return text
 
+
+# =========================================================
+# GENERATE MARKDOWN EXPORT
+# =========================================================
+
+def generate_markdown(answer: str, sources: list):
+    """
+    Export AI response as Markdown.
+
+    Why Markdown?
+    -------------
+    - GitHub compatible
+    - Obsidian compatible
+    - Lightweight knowledge sharing
+    - Developer friendly
+    """
+
+    markdown_content = []
+
+    # =====================================================
+    # TITLE
+    # =====================================================
+
+    markdown_content.append("# AI Response\n")
+
+    # =====================================================
+    # MAIN ANSWER
+    # =====================================================
+
+    markdown_content.append(answer)
+
+    # =====================================================
+    # SOURCES
+    # =====================================================
+
+    markdown_content.append("\n\n# Sources\n")
+
+    for i, source in enumerate(sources, start=1):
+
+        markdown_content.append(
+            f"## Source {i}"
+        )
+
+        markdown_content.append(
+            f"- File: {source.get('source', 'Unknown')}"
+        )
+
+        markdown_content.append(
+            f"- Score: {source.get('score', 0):.3f}"
+        )
+
+        markdown_content.append(
+            f"- Section: {source.get('section', 'General')}"
+        )
+
+        markdown_content.append(
+            f"\n{source.get('content', '')[:500]}\n"
+        )
+
+    # =====================================================
+    # CONVERT TO BUFFER
+    # =====================================================
+
+    content = "\n".join(markdown_content)
+
+    buffer = BytesIO()
+
+    buffer.write(content.encode("utf-8"))
+
+    buffer.seek(0)
+
+    return buffer
+
+# =========================================================
+# GENERATE EXCEL EXPORT
+# =========================================================
+
+def generate_excel(answer: str, sources: list):
+    """
+    Export AI response + sources to Excel workbook.
+
+    Sheets:
+    -------
+    1. AI Answer
+    2. Retrieval Sources
+    """
+
+    output = BytesIO()
+
+    # =====================================================
+    # CREATE EXCEL WRITER
+    # =====================================================
+
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl"
+    ) as writer:
+
+        # =================================================
+        # SHEET 1 — AI ANSWER
+        # =================================================
+
+        answer_df = pd.DataFrame({
+            "AI Response": [answer]
+        })
+
+        answer_df.to_excel(
+            writer,
+            sheet_name="AI_Response",
+            index=False
+        )
+
+        # =================================================
+        # SHEET 2 — SOURCES
+        # =================================================
+
+        source_rows = []
+
+        for source in sources:
+
+            source_rows.append({
+
+                "File": source.get(
+                    "source",
+                    "Unknown"
+                ),
+
+                "Section": source.get(
+                    "section",
+                    "General"
+                ),
+
+                "Score": source.get(
+                    "score",
+                    0
+                ),
+
+                "Content": source.get(
+                    "content",
+                    ""
+                )
+            })
+
+        sources_df = pd.DataFrame(source_rows)
+
+        sources_df.to_excel(
+            writer,
+            sheet_name="Sources",
+            index=False
+        )
+
+    # =====================================================
+    # FINALIZE BUFFER
+    # =====================================================
+
+    output.seek(0)
+
+    return output
+
+# =========================================================
+# GENERATE CSV EXPORT
+# =========================================================
+
+def generate_csv(answer: str, sources: list):
+    """
+    Export AI response into CSV format.
+
+    Structure:
+    ----------
+    Row 1:
+        AI Answer
+
+    Remaining rows:
+        Sources metadata
+    """
+
+    # =====================================================
+    # CREATE TABULAR DATA
+    # =====================================================
+
+    rows = []
+
+    # Main answer row
+    rows.append({
+        "Type": "Answer",
+        "Content": answer,
+        "Source": "",
+        "Score": ""
+    })
+
+    # =====================================================
+    # ADD SOURCES
+    # =====================================================
+
+    for src in sources:
+
+        rows.append({
+            "Type": "Source",
+            "Content": src.get("content", ""),
+            "Source": src.get("source", ""),
+            "Score": src.get("score", "")
+        })
+
+    # =====================================================
+    # CREATE DATAFRAME
+    # =====================================================
+
+    df = pd.DataFrame(rows)
+
+    # =====================================================
+    # SAVE TO MEMORY BUFFER
+    # =====================================================
+
+    from io import BytesIO
+
+    buffer = BytesIO()
+
+    df.to_csv(
+        buffer,
+        index=False
+    )
+
+    buffer.seek(0)
+
+    return buffer
 
 # =========================================================
 # PDF EXPORT

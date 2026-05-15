@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import os
 import numpy as np
 import faiss
+import logging
+import time
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +16,7 @@ from rag.pipeline import RAGPipeline
 from ingestion.pipeline import ingest_file
 from uuid import uuid4
 from fastapi import FastAPI, Response
-from services.export_service import generate_pdf, generate_docx
+from services.export_service import generate_pdf, generate_docx, generate_excel, generate_markdown, generate_csv
 from sentence_transformers import CrossEncoder
 from typing import Optional, Dict
 from pydantic import BaseModel
@@ -22,8 +24,17 @@ from pydantic import BaseModel
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    )
+)
 
-print("STARTING API...")
+
+logging.info("STARTING API...")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +43,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 
 # Initialize components ONCE
 embed_model = None
@@ -81,6 +94,9 @@ class Query(BaseModel):
     Incoming user query payload.
     """
 
+    retrieval_mode: str = "semantic"
+    chat_history: Optional[list] = []
+
     # User question
     question: str
 
@@ -94,10 +110,69 @@ class Query(BaseModel):
     top_k: int = 8
 
 
+@app.on_event("startup")
+def startup_check():
+
+    logging.info(
+        "Running startup checks..."
+    )
+
+    try:
+
+        _ = get_embed_model()
+
+        logging.info(
+            "Embedding model loaded"
+        )
+
+    except Exception as e:
+
+        logging.error(str(e))
+
+@app.get("/stats")
+def stats():
+
+    unique_docs = set()
+
+    for t in vectorstore.texts:
+
+        unique_docs.add(
+            t.get("doc_id")
+        )
+
+    return {
+
+        "documents": len(unique_docs),
+
+        "chunks": len(vectorstore.texts),
+
+        "vectors": vectorstore.index.ntotal,
+
+        "embedding_model":
+            "BAAI/bge-base-en-v1.5",
+
+        "llm": "llama3"
+    }
+
 # Health Check Endpoint
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {
+
+    "status": "running",
+
+    "supported_formats": [
+
+        "pdf",
+        "docx",
+        "md",
+        "xlsx",
+        "xls",
+        "csv"
+    ],
+
+    "vector_count": vectorstore.index.ntotal
+}
 
 # ---------------------------------------------------
 # ASK ENDPOINT
@@ -169,11 +244,14 @@ def ask(query: Query):
         # ---------------------------------------------------
         # RUN RAG PIPELINE
         # ---------------------------------------------------
+        start = time.time()
         result = rag_pipeline.run(
             question=query.question,
             filters=filters,
             top_k=query.top_k
         )
+        end = time.time()
+        print(f"[TIMING] Total RAG time: {end - start:.2f}s")
 
         # ---------------------------------------------------
         # DEBUG OUTPUT
@@ -223,12 +301,38 @@ def ask(query: Query):
 
 # Upload + ingest
 @app.post("/upload")
+
 async def upload(file: UploadFile = File(...)):
     try:
+        
         if not file.filename:
-            return {"error": "Invalid file"}
 
-        path = os.path.join(DATA_DIR, file.filename)
+            return {
+                "error": "Invalid file"
+            }
+
+        # Guaranteed filename string
+        filename = str(file.filename)
+
+        ext = os.path.splitext(filename)[1].lower()
+        ALLOWED_EXTENSIONS = {
+            ".pdf",
+            ".docx",
+            ".md",
+            ".xlsx",
+            ".xls",
+            ".csv"
+            }
+
+        if ext not in ALLOWED_EXTENSIONS:
+
+            return {
+                "error": (
+                    f"Unsupported file type: {ext}"
+                )
+            }
+
+        path = os.path.join(DATA_DIR, filename)
 
         with open(path, "wb") as f:
             f.write(await file.read())
@@ -241,11 +345,27 @@ async def upload(file: UploadFile = File(...)):
         result = ingest_file(path, model, vectorstore)
 
         return {
-            "file_name": file.filename,
-            "chunks_created": result.get("chunks", 0),
-            "vectors_added": result.get("vectors", 0),
-            "total_vectors": result.get("total_index", vectorstore.index.ntotal)
-        }
+
+        "file_name": file.filename,
+
+        "doc_id": result.get("doc_id"),
+
+        "chunks_created": result.get("chunks", 0),
+
+        "vectors_added": result.get("vectors", 0),
+
+        "total_vectors":
+            result.get(
+                "total_index",
+                vectorstore.index.ntotal
+            ),
+
+        "sections":
+            result.get("sections", []),
+
+        "keywords":
+            result.get("keywords", [])[:10]
+    }
 
     except Exception as e:
         print("UPLOAD ERROR:", str(e))
@@ -372,11 +492,67 @@ def export_response(data: dict):
         )
 
     elif fmt == "docx":
+
         file = generate_docx(answer, sources)
+
         return Response(
             content=file.read(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": "attachment; filename=answer.docx"}
+            headers={
+                "Content-Disposition":
+                "attachment; filename=answer.docx"
+            }
+        )
+
+    # =====================================================
+    # CSV EXPORT
+    # =====================================================
+
+    elif fmt == "csv":
+
+        file = generate_csv(answer, sources)
+
+        return Response(
+            content=file.read(),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition":
+                "attachment; filename=answer.csv"
+            }
+        )
+
+    elif fmt == "md":
+        file = generate_markdown(
+            answer,
+            sources
+        )
+
+        return Response(
+            content=file.read(),
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition":
+                "attachment; filename=answer.md"
+            }
+        )
+
+    elif fmt == "xlsx":
+
+        file = generate_excel(
+            answer,
+            sources
+        )
+
+        return Response(
+            content=file.read(),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition":
+                "attachment; filename=answer.xlsx"
+            }
         )
 
     return {"error": "Invalid format"}
@@ -398,3 +574,44 @@ def get_documents():
             }
 
     return list(docs.values())
+
+
+@app.get("/documents/{doc_id}")
+def get_document_details(doc_id: str):
+
+    chunks = [
+        t for t in vectorstore.texts
+        if t.get("doc_id") == doc_id
+    ]
+
+    if not chunks:
+        return {
+            "error": "Document not found"
+        }
+
+    first = chunks[0]
+
+    return {
+
+        "doc_id": doc_id,
+
+        "file_name": first.get("file_name"),
+
+        "document_title": first.get(
+            "document_title"
+        ),
+
+        "total_chunks": len(chunks),
+
+        "sections": list(set(
+            c.get("section", "General")
+            for c in chunks
+        )),
+
+        "source": first.get("source"),
+
+        "sample_keywords": first.get(
+            "keywords",
+            []
+        )[:10]
+    }

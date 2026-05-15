@@ -1,4 +1,5 @@
 from rag.reranker import Reranker
+import time
 
 
 
@@ -83,7 +84,7 @@ class RAGPipeline:
             """
         return prompt
 
-    def run(self, question: str,filters=None,top_k=5):
+    def run(self, question: str,filters=None,top_k=4):
         """
         Execute full RAG flow:
         1. Retrieve relevant chunks
@@ -113,6 +114,7 @@ class RAGPipeline:
         # =====================================================
         # STEP 3: RETRIEVE CHUNKS
         # =====================================================
+        retrieval_start = time.time()
 
         dynamic_k = self.adaptive_top_k(query_type)
 
@@ -120,6 +122,13 @@ class RAGPipeline:
             enhanced_query,
             k=dynamic_k,
             filters=filters
+        )
+
+        retrieval_end = time.time()
+
+        print(
+            f"[TIMING] Retrieval: "
+            f"{retrieval_end - retrieval_start:.2f}s"
         )
 
         # =====================================================
@@ -149,9 +158,16 @@ class RAGPipeline:
         # =====================================================
         # STEP 6: RERANK RESULTS
         # =====================================================
+        rerank_start = time.time()
 
         results = self.reranker.rerank(question, results)
         results = self.diversify_results(results)
+        rerank_end = time.time()
+
+        print(
+            f"[TIMING] Reranking: "
+            f"{rerank_end - rerank_start:.2f}s"
+        )
 
         # =====================================================
         # STEP 7: STRICT RELEVANCE CHECK

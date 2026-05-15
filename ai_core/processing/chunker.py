@@ -10,11 +10,8 @@ from typing import TypedDict, List
 # =========================================================
 
 class ChunkData(TypedDict):
-    """
-    Structured chunk schema for advanced RAG retrieval.
-    """
 
-    # Main content
+    # Main chunk text
     text: str
 
     # Document metadata
@@ -22,20 +19,31 @@ class ChunkData(TypedDict):
     document_title: str
     doc_id: str
 
-    # Structure metadata
+    # Structural metadata
     section: str
     subsection: str
+
+    # NEW
+    chunk_type: str
+
+    # NEW
+    hierarchy_level: int
 
     # Chunk tracking
     chunk_id: int
 
-    # Chunk stats
+    # Chunk statistics
     chunk_length: int
     word_count: int
 
     # Semantic metadata
     keywords: List[str]
     tags: List[str]
+
+    # Table metadata
+    sheet_name: str
+    row_range: str
+    column_names: List[str]
 
 
 # =========================================================
@@ -253,6 +261,153 @@ def split_by_headings(text: str):
     return sections
 
 
+# =========================================================
+# SPLIT TABULAR DATA
+# =========================================================
+
+def split_tabular_data(text: str) -> list[str]:
+    """
+    Split CSV / Excel text into row-based chunks.
+
+    Strategy:
+    ----------
+    - Each row becomes one semantic unit
+    - Preserve structured field relationships
+    - Better for retrieval accuracy
+    """
+
+    sections = []
+
+    # Split by double newlines
+    rows = text.split("\n\n")
+
+    for row in rows:
+
+        cleaned = row.strip()
+
+        # Skip weak rows
+        if len(cleaned) < 50:
+            continue
+
+        sections.append(cleaned)
+
+    print(f"[TABULAR] Rows detected: {len(sections)}")
+
+    return sections
+
+
+# =========================================================
+# DETECT CHUNK TYPE
+# =========================================================
+
+def detect_chunk_type(text: str) -> str:
+    """
+    Detect semantic chunk category.
+    """
+
+    lower = text.lower()
+
+    # =====================================================
+    # TABLE DETECTION
+    # =====================================================
+
+    if is_table_chunk(text):
+        return "table"
+
+    # =====================================================
+    # CODE DETECTION
+    # =====================================================
+
+    code_patterns = [
+        "def ",
+        "class ",
+        "import ",
+        "public ",
+        "private ",
+        "SELECT ",
+        "{",
+        "}"
+    ]
+
+    if any(p in text for p in code_patterns):
+        return "code"
+
+    # =====================================================
+    # LIST DETECTION
+    # =====================================================
+
+    list_patterns = [
+        "- ",
+        "* ",
+        "1.",
+        "2."
+    ]
+
+    if any(p in text for p in list_patterns):
+        return "list"
+
+    # =====================================================
+    # DEFAULT
+    # =====================================================
+
+    return "paragraph"
+
+# =========================================================
+# DETECT HEADING LEVEL
+# =========================================================
+
+def detect_heading_level(section_title: str) -> int:
+    """
+    Detect heading hierarchy level.
+    """
+
+    if re.match(r"\d+\.\d+\.\d+", section_title):
+        return 3
+
+    if re.match(r"\d+\.\d+", section_title):
+        return 2
+
+    if re.match(r"\d+\.", section_title):
+        return 1
+
+    return 0
+
+
+# =========================================================
+# DETECT TABLE-LIKE CONTENT
+# =========================================================
+
+def is_table_chunk(text: str) -> bool:
+    """
+    Detect whether chunk contains
+    structured table-like data.
+    """
+
+    indicators = [
+
+        # CSV style
+        ",",
+
+        # Excel converted rows
+        "|",
+
+        # Multiple colons
+        ":",
+
+        # Tabs
+        "\t"
+    ]
+
+    score = 0
+
+    for indicator in indicators:
+
+        if indicator in text:
+            score += 1
+
+    return score >= 2
+
+
 
 # =========================================================
 # ADVANCED RAG CHUNKER
@@ -289,7 +444,25 @@ def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
     # STEP 2: SPLIT INTO SECTIONS
     # -----------------------------------------------------
 
-    sections = split_by_headings(text)
+    # DETECT TABULAR DATA
+    is_tabular = (
+        "Rig_ID:" in text
+        or "Sheet:" in text
+        or "===" in text
+    )
+
+    # SPLIT STRATEGY
+    if is_tabular:
+
+        print("[CHUNKER] Using TABULAR chunking")
+
+        sections = split_tabular_data(text)
+
+    else:
+
+        print("[CHUNKER] Using DOCUMENT chunking")
+
+        sections = split_by_headings(text)
 
     # -----------------------------------------------------
     # STEP 3: CONFIGURE SPLITTER
@@ -298,10 +471,10 @@ def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
     splitter = RecursiveCharacterTextSplitter(
 
         # Larger chunks preserve technical meaning
-        chunk_size=700,
+        chunk_size=500,
 
         # Overlap preserves cross-boundary context
-        chunk_overlap=120,
+        chunk_overlap=80,
 
         # Semantic-aware separators
         separators=[
@@ -372,10 +545,10 @@ def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
             # chunk is plain STRING
             cleaned = chunk.strip()
 
-            chunk_title = cleaned.split(".")[0][:80]
+            chunk_title = (cleaned[:80].replace("\n", " ").strip())
 
             # Skip low-information chunks
-            if len(cleaned.split()) < 20:
+            if len(cleaned.split()) < 8:
                 continue
 
             # Remove duplicated title
@@ -385,7 +558,29 @@ def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
                 1
             ).strip()
 
-            enhanced_chunk = f"""
+            # =====================================================
+            # TABLE-AWARE ENRICHMENT
+            # =====================================================
+
+            chunk_type = detect_chunk_type(cleaned)
+
+            if chunk_type == "table":
+
+                enhanced_chunk = f"""
+                Document: {document_title}
+
+                Section: {section_title}
+
+                Content Type:
+                Structured Table Data
+
+                Table Content:
+                {cleaned}
+                """
+
+            else:
+
+                enhanced_chunk = f"""
                 Document: {document_title}
 
                 Section: {section_title}
@@ -399,28 +594,66 @@ def chunk_text(text: str,file_name: str,doc_id: str) -> List[ChunkData]:
 
             # Store structured chunk
             chunk_data: ChunkData = {
-                # Main chunk text
+
+                # =====================================================
+                # MAIN CONTENT
+                # =====================================================
+
                 "text": enhanced_chunk,
 
-                # Document metadata
+                # =====================================================
+                # DOCUMENT METADATA
+                # =====================================================
+
                 "file_name": file_name,
+
                 "document_title": document_title,
+
                 "doc_id": doc_id,
 
-                # Structural metadata
+                # =====================================================
+                # STRUCTURE METADATA
+                # =====================================================
+
                 "section": section_title,
+
                 "subsection": "General",
 
-                # Chunk tracking
+                # NEW
+                "chunk_type": detect_chunk_type(cleaned),
+
+                # NEW
+                "hierarchy_level": detect_heading_level(
+                    first_line
+                ),
+
+                # =====================================================
+                # CHUNK TRACKING
+                # =====================================================
+
                 "chunk_id": len(all_chunks),
 
-                # Chunk statistics
+                # =====================================================
+                # CHUNK STATS
+                # =====================================================
+
                 "chunk_length": len(enhanced_chunk),
+
                 "word_count": len(enhanced_chunk.split()),
 
-                # Semantic metadata
+                # =====================================================
+                # SEMANTIC METADATA
+                # =====================================================
+
                 "keywords": extract_keywords(cleaned),
-                "tags": []
+
+                "tags": [],
+
+                "sheet_name": "General",
+
+                "row_range": "0-0",
+
+                "column_names": [],
             }
 
             all_chunks.append(chunk_data)
@@ -502,3 +735,5 @@ def extract_keywords(text: str, top_k=10):
         word
         for word, _ in counts.most_common(top_k)
     ]
+
+

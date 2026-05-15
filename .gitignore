@@ -26,6 +26,7 @@ env/
 faiss.index
 metadata.pkl
 vector_db/
+ai_core/storage/documents.json
 
 # FAISS / Pickle files
 *.index
